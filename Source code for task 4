@@ -1,0 +1,181 @@
+```zip
+time-tracker-extension/
+├── extension/
+│   ├── manifest.json
+│   ├── background.js
+│   ├── popup.html
+│   ├── popup.js
+│   └── popup.css
+├── server/
+│   ├── index.js
+│   └── package.json
+```
+
+**extension/manifest.json**
+```json
+{
+  "manifest_version": 3,
+  "name": "Time Tracker",
+  "version": "1.0",
+  "permissions": ["tabs", "activeTab", "storage", "webNavigation"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  }
+}
+```
+
+**extension/background.js**
+```javascript
+let currentTab = null;
+let timeData = {};
+
+chrome.webNavigation.onCompleted.addListener((details) => {
+  chrome.tabs.get(details.tabId, (tab) => {
+    if (tab.url) {
+      currentTab = new URL(tab.url).hostname;
+      timeData[currentTab] = timeData[currentTab] || { time: 0, productive: isProductive(tab.url) };
+      setInterval(() => {
+        if (currentTab) {
+          timeData[currentTab].time += 1;
+          chrome.storage.local.set({ timeData });
+        }
+      }, 1000);
+    }
+  });
+});
+
+function isProductive(url) {
+  const productiveDomains = ['github.com', 'stackoverflow.com', 'codecademy.com'];
+  const unproductiveDomains = ['facebook.com', 'twitter.com', 'instagram.com'];
+  const hostname = new URL(url).hostname;
+  if (productiveDomains.includes(hostname)) return true;
+  if (unproductiveDomains.includes(hostname)) return false;
+  return true; // Default to productive
+}
+```
+
+**extension/popup.html**
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <h1>Time Tracker</h1>
+  <div id="analytics"></div>
+  <button id="sync">Sync with Server</button>
+  <script src="popup.js"></script>
+</body>
+</html>
+```
+
+**extension/popup.js**
+```javascript
+document.addEventListener('DOMContentLoaded', () => {
+  chrome.storage.local.get('timeData', (data) => {
+    const analyticsDiv = document.getElementById('analytics');
+    if (data.timeData) {
+      for (const [site, info] of Object.entries(data.timeData)) {
+        const p = document.createElement('p');
+        p.textContent = `${site}: ${info.time} seconds (${info.productive ? 'Productive' : 'Unproductive'})`;
+        analyticsDiv.appendChild(p);
+      }
+    }
+  });
+
+  document.getElementById('sync').addEventListener('click', () => {
+    chrome.storage.local.get('timeData', (data) => {
+      fetch('http://localhost:5000/api/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data.timeData)
+      })
+        .then((res) => res.json())
+        .then((response) => alert('Data synced: ' + response.message))
+        .catch((err) => console.error('Sync error:', err));
+    });
+  });
+});
+```
+
+**extension/popup.css**
+```css
+body {
+  width: 300px;
+  padding: 10px;
+  font-family: Arial, sans-serif;
+}
+h1 {
+  font-size: 18px;
+}
+#analytics p {
+  margin: 5px 0;
+}
+#sync {
+  padding: 5px 10px;
+  background: #007bff;
+  color: white;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+```
+
+**server/index.js**
+```javascript
+const express = require('express');
+const mongoose = require('mongoose');
+const cors = require('cors');
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+mongoose.connect('mongodb://localhost:27017/time-tracker', {
+  useNewUrlParser: true,
+  useUnifiedTopology: true
+});
+
+const timeSchema = new mongoose.Schema({
+  site: String,
+  time: Number,
+  productive: Boolean,
+  date: { type: Date, default: Date.now }
+});
+const TimeEntry = mongoose.model('TimeEntry', timeSchema);
+
+app.post('/api/sync', async (req, res) => {
+  try {
+    for (const [site, info] of Object.entries(req.body)) {
+      await TimeEntry.create({ site, time: info.time, productive: info.productive });
+    }
+    res.json({ message: 'Data synced successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.listen(5000, () => {
+  console.log('Server running on port 5000');
+});
+```
+
+**server/package.json**
+```json
+{
+  "name": "time-tracker-server",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.17.1",
+    "mongoose": "^6.5.0"
+  }
+}
+```
